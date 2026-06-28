@@ -66,17 +66,28 @@ class App {
 		this.hitTestSourceRequested = false;
 		this.hitTestSource = null;
 
-		function onSelect() {
-			if (self.mymesh === undefined) return;
+		function placeModel() {
+			console.log('Tap detected, reticle:', self.reticle.visible, 'model:', !!self.mymesh);
+			if (self.mymesh === undefined) {
+				console.log('Model not loaded yet');
+				return;
+			}
 
 			if (self.reticle.visible) {
 				self.mymesh.position.setFromMatrixPosition(self.reticle.matrix);
 				self.mymesh.visible = true;
+				console.log('Model placed at:', self.mymesh.position);
+			} else {
+				// fallback: place in front of camera
+				self.mymesh.position.set(0, 0, -0.5);
+				self.mymesh.visible = true;
+				console.log('Fallback: model placed 0.5m in front');
 			}
 		}
 
 		this.controller = this.renderer.xr.getController(0);
-		this.controller.addEventListener('select', onSelect);
+		this.controller.addEventListener('selectend', placeModel);
+		this.controller.addEventListener('select', placeModel);
 
 		this.scene.add(this.controller);
 	}
@@ -129,11 +140,15 @@ class App {
 				self.mymesh = gltf.scene;
 				self.mymesh.scale.set(0.7, 0.7, 0.7);
 
-				self.mymesh.visible = false;
+				// show model immediately at origin to verify it loaded
+				self.mymesh.position.set(0, 0, -0.5);
+				self.mymesh.visible = true;
 
 				self.loadingBar.visible = false;
 
 				self.renderer.setAnimationLoop(self.render.bind(self));
+
+				console.log('Model loaded successfully');
 			},
 			// called while loading is progressing
 			function (xhr) {
@@ -159,6 +174,8 @@ class App {
 			self.renderer.xr.setSession(session);
 
 			currentSession = session;
+
+			console.log('AR session started');
 		}
 
 		function onSessionEnded() {
@@ -172,6 +189,8 @@ class App {
 			}
 
 			self.renderer.setAnimationLoop(null);
+
+			console.log('AR session ended');
 		}
 
 		if (currentSession === null) {
