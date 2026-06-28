@@ -10,13 +10,6 @@ class App {
 		const container = document.createElement('div');
 		document.body.appendChild(container);
 
-		// status bar at bottom (under the AR layer, but visible before AR starts)
-		this.statusEl = document.createElement('div');
-		this.statusEl.style.cssText =
-			'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:9999;color:#fff;background:rgba(0,0,0,0.8);padding:8px 16px;font:14px sans-serif;border-radius:8px;text-align:center;pointer-events:none;';
-		this.statusEl.textContent = '';
-		document.body.appendChild(this.statusEl);
-
 		this.loadingBar = new LoadingBar();
 		this.loadingBar.visible = false;
 
@@ -57,24 +50,12 @@ class App {
 		window.addEventListener('resize', this.resize.bind(this));
 	}
 
-	_setStatus(msg) {
-		console.log(msg);
-		this.statusEl.textContent = msg;
-		// auto-clear after 3 seconds
-		clearTimeout(this._statusTimer);
-		this._statusTimer = setTimeout(() => {
-			this.statusEl.textContent = '';
-		}, 3000);
-	}
-
 	setupXR() {
 		this.renderer.xr.enabled = true;
 
-		const self = this;
 		this.hitTestSourceRequested = false;
 		this.hitTestSource = null;
-
-		this._setStatus('Page ready');
+		this._placed = false;  // whether model has been placed on a surface
 	}
 
 	resize() {
@@ -105,7 +86,6 @@ class App {
 	}
 
 	showModel() {
-		this._setStatus('Starting AR...');
 		this.initAR();
 
 		const loader = new GLTFLoader().setPath(this.assetsPath);
@@ -125,13 +105,13 @@ class App {
 				self.mymesh.visible = true;
 				self.loadingBar.visible = false;
 				self.renderer.setAnimationLoop(self.render.bind(self));
-				self._setStatus('Model loaded — tap screen to place');
+				console.log('Model loaded');
 			},
 			function (xhr) {
 				self.loadingBar.progress = xhr.loaded / xhr.total;
 			},
 			function (error) {
-				self._setStatus('ERROR: ' + error);
+				console.log('Model load error:', error);
 			}
 		);
 	}
@@ -141,55 +121,37 @@ class App {
 		const sessionInit = { requiredFeatures: ['hit-test'] };
 
 		function onSessionStarted(session) {
-			self._setStatus('AR active — point at table');
-
 			session.addEventListener('end', onSessionEnded);
 
 			self.renderer.xr.setReferenceSpaceType('local');
 			self.renderer.xr.setSession(session);
 
-			// ---- raw WebXR session-level input events ----
-			// These bypass Three.js and work even on iOS XRViewer
-			session.addEventListener('selectstart', function (ev) {
-				console.log('XR selectstart', ev);
-				self._setStatus('Touch down');
-				self._tryPlaceModel();
-			});
-			session.addEventListener('selectend', function (ev) {
-				console.log('XR selectend', ev);
-				self._setStatus('Touch up');
-				self._tryPlaceModel();
-			});
-			session.addEventListener('select', function (ev) {
-				console.log('XR select', ev);
-				self._setStatus('Select');
-				self._tryPlaceModel();
-			});
+			// listen for ALL session input events
+			function handleInput(ev) {
+				console.log('Session input:', ev.type);
+				// Only place on first tap (selectend = tap release)
+				if (ev.type === 'selectend') {
+					self._placed = true;
+				}
+			}
+			session.addEventListener('selectstart', handleInput);
+			session.addEventListener('selectend', handleInput);
+			session.addEventListener('select', handleInput);
 
-			// also try Three.js controller events (post-session setup)
+			// Three.js controller fallback
 			const ctrl = self.renderer.xr.getController(0);
-			ctrl.addEventListener('selectstart', function () {
-				console.log('Three selectstart');
-				self._tryPlaceModel();
-			});
 			ctrl.addEventListener('selectend', function () {
-				console.log('Three selectend');
-				self._tryPlaceModel();
+				console.log('Three.js selectend');
+				self._placed = true;
 			});
 			ctrl.addEventListener('select', function () {
-				console.log('Three select');
-				self._tryPlaceModel();
+				console.log('Three.js select');
+				self._placed = true;
 			});
 			self.scene.add(ctrl);
-
-			self._xrSession = session;
 		}
 
 		function onSessionEnded() {
-			self._setStatus('AR ended');
-			if (self._xrSession) {
-				self._xrSession = null;
-			}
 			if (self.mymesh !== null) {
 				self.scene.remove(self.mymesh);
 				self.mymesh = null;
@@ -200,24 +162,6 @@ class App {
 		navigator.xr.requestSession('immersive-ar', sessionInit).then(onSessionStarted);
 	}
 
-	_tryPlaceModel() {
-		if (this.mymesh === undefined || this.mymesh === null) {
-			this._setStatus('Model not ready');
-			return;
-		}
-
-		if (this.reticle.visible) {
-			this.mymesh.position.setFromMatrixPosition(this.reticle.matrix);
-			this.mymesh.visible = true;
-			this._setStatus('Placed on surface!');
-		} else {
-			// fallback: 1m in front of camera
-			this.mymesh.position.set(0, 0, -1);
-			this.mymesh.visible = true;
-			this._setStatus('Placed (no surface detected)');
-		}
-	}
-
 	requestHitTestSource() {
 		const self = this;
 		const session = this.renderer.xr.getSession();
@@ -226,7 +170,6 @@ class App {
 		session.requestReferenceSpace('viewer').then(function (referenceSpace) {
 			session.requestHitTestSource({ space: referenceSpace }).then(function (source) {
 				self.hitTestSource = source;
-				console.log('Hit-test source ready');
 			});
 		});
 
@@ -246,8 +189,14 @@ class App {
 			const referenceSpace = this.renderer.xr.getReferenceSpace();
 			const hit = hitTestResults[0];
 			const pose = hit.getPose(referenceSpace);
+
 			this.reticle.visible = true;
 			this.reticle.matrix.fromArray(pose.transform.matrix);
+
+			// AUTO-PLACE: model follows reticle until user taps to lock it
+			if (this.mymesh && this.mymesh.visible && !this._placed) {
+				this.mymesh.position.setFromMatrixPosition(this.reticle.matrix);
+			}
 		} else {
 			this.reticle.visible = false;
 		}
@@ -256,8 +205,10 @@ class App {
 	render(timestamp, frame) {
 		if (frame) {
 			if (this.hitTestSourceRequested === false) this.requestHitTestSource();
+
 			if (this.hitTestSource) this.getHitTestResults(frame);
 		}
+
 		this.renderer.render(this.scene, this.camera);
 	}
 }
