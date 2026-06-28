@@ -10,13 +10,12 @@ class App {
 		const container = document.createElement('div');
 		document.body.appendChild(container);
 
-		// on-screen debug overlay
-		this.debugEl = document.createElement('div');
-		this.debugEl.style.cssText =
-			'position:fixed;top:10px;left:10px;z-index:9999;color:lime;background:rgba(0,0,0,0.7);padding:6px 10px;font:13px monospace;border-radius:4px;pointer-events:none;max-width:95vw;word-wrap:break-word;';
-		this.debugEl.textContent = 'initializing...';
-		document.body.appendChild(this.debugEl);
-		this._log('App started');
+		// status bar at bottom (under the AR layer, but visible before AR starts)
+		this.statusEl = document.createElement('div');
+		this.statusEl.style.cssText =
+			'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:9999;color:#fff;background:rgba(0,0,0,0.8);padding:8px 16px;font:14px sans-serif;border-radius:8px;text-align:center;pointer-events:none;';
+		this.statusEl.textContent = '';
+		document.body.appendChild(this.statusEl);
 
 		this.loadingBar = new LoadingBar();
 		this.loadingBar.visible = false;
@@ -58,76 +57,24 @@ class App {
 		window.addEventListener('resize', this.resize.bind(this));
 	}
 
-	_log(msg) {
+	_setStatus(msg) {
 		console.log(msg);
-		if (this.debugEl) {
-			this.debugEl.textContent = msg;
-		}
+		this.statusEl.textContent = msg;
+		// auto-clear after 3 seconds
+		clearTimeout(this._statusTimer);
+		this._statusTimer = setTimeout(() => {
+			this.statusEl.textContent = '';
+		}, 3000);
 	}
 
 	setupXR() {
 		this.renderer.xr.enabled = true;
 
-		if ('xr' in navigator) {
-			navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
-				if (supported) {
-					this._log('AR supported');
-				} else {
-					this._log('AR NOT supported on this browser');
-				}
-			});
-		} else {
-			this._log('WebXR NOT available (navigator.xr missing)');
-		}
-
 		const self = this;
-
 		this.hitTestSourceRequested = false;
 		this.hitTestSource = null;
 
-		function placeModel() {
-			self._log('placeModel() called, reticle=' + self.reticle.visible + ' model=' + !!self.mymesh);
-			if (self.mymesh === undefined) {
-				self._log('SKIP: model not loaded yet');
-				return;
-			}
-
-			if (self.reticle.visible) {
-				self.mymesh.position.setFromMatrixPosition(self.reticle.matrix);
-				self.mymesh.visible = true;
-				self._log('OK: model placed on surface');
-			} else {
-				self.mymesh.position.set(0, 0, -1);
-				self.mymesh.visible = true;
-				self._log('FALLBACK: model placed 1m ahead');
-			}
-		}
-
-		// WebXR controller events
-		this.controller = this.renderer.xr.getController(0);
-		this.controller.addEventListener('selectend', function () {
-			self._log('WebXR selectend fired');
-			placeModel();
-		});
-		this.controller.addEventListener('select', function () {
-			self._log('WebXR select fired');
-			placeModel();
-		});
-		this.scene.add(this.controller);
-
-		// DOM fallback for iOS XRViewer
-		this.renderer.domElement.addEventListener('touchend', function (e) {
-			self._log('DOM touchend fired');
-			e.preventDefault();
-			placeModel();
-		});
-		this.renderer.domElement.addEventListener('click', function (e) {
-			self._log('DOM click fired');
-			e.preventDefault();
-			placeModel();
-		});
-
-		this._log('Event listeners ready');
+		this._setStatus('Page ready');
 	}
 
 	resize() {
@@ -158,7 +105,7 @@ class App {
 	}
 
 	showModel() {
-		this._log('showModel() — starting AR + loading model...');
+		this._setStatus('Starting AR...');
 		this.initAR();
 
 		const loader = new GLTFLoader().setPath(this.assetsPath);
@@ -178,70 +125,121 @@ class App {
 				self.mymesh.visible = true;
 				self.loadingBar.visible = false;
 				self.renderer.setAnimationLoop(self.render.bind(self));
-				self._log('Model loaded OK — visible at origin');
+				self._setStatus('Model loaded — tap screen to place');
 			},
 			function (xhr) {
 				self.loadingBar.progress = xhr.loaded / xhr.total;
 			},
 			function (error) {
-				self._log('ERROR loading model: ' + error);
+				self._setStatus('ERROR: ' + error);
 			}
 		);
 	}
 
 	initAR() {
-		let currentSession = null;
 		const self = this;
-
 		const sessionInit = { requiredFeatures: ['hit-test'] };
 
 		function onSessionStarted(session) {
+			self._setStatus('AR active — point at table');
+
 			session.addEventListener('end', onSessionEnded);
+
 			self.renderer.xr.setReferenceSpaceType('local');
 			self.renderer.xr.setSession(session);
-			currentSession = session;
-			self._log('AR session STARTED');
+
+			// ---- raw WebXR session-level input events ----
+			// These bypass Three.js and work even on iOS XRViewer
+			session.addEventListener('selectstart', function (ev) {
+				console.log('XR selectstart', ev);
+				self._setStatus('Touch down');
+				self._tryPlaceModel();
+			});
+			session.addEventListener('selectend', function (ev) {
+				console.log('XR selectend', ev);
+				self._setStatus('Touch up');
+				self._tryPlaceModel();
+			});
+			session.addEventListener('select', function (ev) {
+				console.log('XR select', ev);
+				self._setStatus('Select');
+				self._tryPlaceModel();
+			});
+
+			// also try Three.js controller events (post-session setup)
+			const ctrl = self.renderer.xr.getController(0);
+			ctrl.addEventListener('selectstart', function () {
+				console.log('Three selectstart');
+				self._tryPlaceModel();
+			});
+			ctrl.addEventListener('selectend', function () {
+				console.log('Three selectend');
+				self._tryPlaceModel();
+			});
+			ctrl.addEventListener('select', function () {
+				console.log('Three select');
+				self._tryPlaceModel();
+			});
+			self.scene.add(ctrl);
+
+			self._xrSession = session;
 		}
 
 		function onSessionEnded() {
-			currentSession.removeEventListener('end', onSessionEnded);
-			currentSession = null;
+			self._setStatus('AR ended');
+			if (self._xrSession) {
+				self._xrSession = null;
+			}
 			if (self.mymesh !== null) {
 				self.scene.remove(self.mymesh);
 				self.mymesh = null;
 			}
 			self.renderer.setAnimationLoop(null);
-			self._log('AR session ENDED');
 		}
 
-		if (currentSession === null) {
-			navigator.xr.requestSession('immersive-ar', sessionInit).then(onSessionStarted);
+		navigator.xr.requestSession('immersive-ar', sessionInit).then(onSessionStarted);
+	}
+
+	_tryPlaceModel() {
+		if (this.mymesh === undefined || this.mymesh === null) {
+			this._setStatus('Model not ready');
+			return;
+		}
+
+		if (this.reticle.visible) {
+			this.mymesh.position.setFromMatrixPosition(this.reticle.matrix);
+			this.mymesh.visible = true;
+			this._setStatus('Placed on surface!');
 		} else {
-			currentSession.end();
+			// fallback: 1m in front of camera
+			this.mymesh.position.set(0, 0, -1);
+			this.mymesh.visible = true;
+			this._setStatus('Placed (no surface detected)');
 		}
 	}
 
 	requestHitTestSource() {
 		const self = this;
 		const session = this.renderer.xr.getSession();
+		if (!session) return;
 
 		session.requestReferenceSpace('viewer').then(function (referenceSpace) {
 			session.requestHitTestSource({ space: referenceSpace }).then(function (source) {
 				self.hitTestSource = source;
-				self._log('Hit-test source ready');
+				console.log('Hit-test source ready');
 			});
 		});
 
 		session.addEventListener('end', function () {
 			self.hitTestSourceRequested = false;
 			self.hitTestSource = null;
-			self.referenceSpace = null;
 		});
 
 		this.hitTestSourceRequested = true;
 	}
 
 	getHitTestResults(frame) {
+		if (!this.hitTestSource) return;
 		const hitTestResults = frame.getHitTestResults(this.hitTestSource);
 
 		if (hitTestResults.length) {
