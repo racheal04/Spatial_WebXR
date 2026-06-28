@@ -10,6 +10,14 @@ class App {
 		const container = document.createElement('div');
 		document.body.appendChild(container);
 
+		// on-screen debug overlay
+		this.debugEl = document.createElement('div');
+		this.debugEl.style.cssText =
+			'position:fixed;top:10px;left:10px;z-index:9999;color:lime;background:rgba(0,0,0,0.7);padding:6px 10px;font:13px monospace;border-radius:4px;pointer-events:none;max-width:95vw;word-wrap:break-word;';
+		this.debugEl.textContent = 'initializing...';
+		document.body.appendChild(this.debugEl);
+		this._log('App started');
+
 		this.loadingBar = new LoadingBar();
 		this.loadingBar.visible = false;
 
@@ -50,15 +58,26 @@ class App {
 		window.addEventListener('resize', this.resize.bind(this));
 	}
 
+	_log(msg) {
+		console.log(msg);
+		if (this.debugEl) {
+			this.debugEl.textContent = msg;
+		}
+	}
+
 	setupXR() {
 		this.renderer.xr.enabled = true;
 
 		if ('xr' in navigator) {
 			navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
 				if (supported) {
-					const collection = document.getElementsByClassName('ar-button');
+					this._log('AR supported');
+				} else {
+					this._log('AR NOT supported on this browser');
 				}
 			});
+		} else {
+			this._log('WebXR NOT available (navigator.xr missing)');
 		}
 
 		const self = this;
@@ -67,42 +86,48 @@ class App {
 		this.hitTestSource = null;
 
 		function placeModel() {
-			console.log('Tap detected, reticle:', self.reticle.visible, 'model:', !!self.mymesh);
+			self._log('placeModel() called, reticle=' + self.reticle.visible + ' model=' + !!self.mymesh);
 			if (self.mymesh === undefined) {
-				console.log('Model not loaded yet');
+				self._log('SKIP: model not loaded yet');
 				return;
 			}
 
 			if (self.reticle.visible) {
 				self.mymesh.position.setFromMatrixPosition(self.reticle.matrix);
 				self.mymesh.visible = true;
-				console.log('Model placed at:', self.mymesh.position);
+				self._log('OK: model placed on surface');
 			} else {
-				// fallback: place 1m in front of camera
 				self.mymesh.position.set(0, 0, -1);
 				self.mymesh.visible = true;
-				console.log('Fallback: model placed 1m in front');
+				self._log('FALLBACK: model placed 1m ahead');
 			}
 		}
 
-		// WebXR controller events (works on Android Chrome + real VR controllers)
+		// WebXR controller events
 		this.controller = this.renderer.xr.getController(0);
-		this.controller.addEventListener('selectend', placeModel);
-		this.controller.addEventListener('select', placeModel);
+		this.controller.addEventListener('selectend', function () {
+			self._log('WebXR selectend fired');
+			placeModel();
+		});
+		this.controller.addEventListener('select', function () {
+			self._log('WebXR select fired');
+			placeModel();
+		});
 		this.scene.add(this.controller);
 
-		// DOM touch/click fallback (for iOS XRViewer and other viewers
-		// that don't forward screen taps to WebXR controller events)
+		// DOM fallback for iOS XRViewer
 		this.renderer.domElement.addEventListener('touchend', function (e) {
-			console.log('DOM touchend fired');
+			self._log('DOM touchend fired');
 			e.preventDefault();
 			placeModel();
 		});
 		this.renderer.domElement.addEventListener('click', function (e) {
-			console.log('DOM click fired');
+			self._log('DOM click fired');
 			e.preventDefault();
 			placeModel();
 		});
+
+		this._log('Event listeners ready');
 	}
 
 	resize() {
@@ -123,7 +148,6 @@ class App {
 			(texture) => {
 				const envMap = pmremGenerator.fromEquirectangular(texture).texture;
 				pmremGenerator.dispose();
-
 				self.scene.environment = envMap;
 			},
 			undefined,
@@ -134,6 +158,7 @@ class App {
 	}
 
 	showModel() {
+		this._log('showModel() — starting AR + loading model...');
 		this.initAR();
 
 		const loader = new GLTFLoader().setPath(this.assetsPath);
@@ -143,33 +168,23 @@ class App {
 		loader.setDRACOLoader(dracoLoader);
 		this.loadingBar.visible = true;
 
-		// Load a glTF resource
 		loader.load(
-			// resource URL
 			`desk_model.glb`,
-			// called when the resource is loaded
 			function (gltf) {
 				self.scene.add(gltf.scene);
 				self.mymesh = gltf.scene;
 				self.mymesh.scale.set(0.7, 0.7, 0.7);
-
-				// show at AR origin on load, tap to reposition
 				self.mymesh.position.set(0, 0, 0);
 				self.mymesh.visible = true;
-
 				self.loadingBar.visible = false;
-
 				self.renderer.setAnimationLoop(self.render.bind(self));
-
-				console.log('Model loaded successfully');
+				self._log('Model loaded OK — visible at origin');
 			},
-			// called while loading is progressing
 			function (xhr) {
 				self.loadingBar.progress = xhr.loaded / xhr.total;
 			},
-			// called when loading has errors
 			function (error) {
-				console.log('An error happened', error);
+				self._log('ERROR loading model: ' + error);
 			}
 		);
 	}
@@ -182,28 +197,21 @@ class App {
 
 		function onSessionStarted(session) {
 			session.addEventListener('end', onSessionEnded);
-
 			self.renderer.xr.setReferenceSpaceType('local');
 			self.renderer.xr.setSession(session);
-
 			currentSession = session;
-
-			console.log('AR session started');
+			self._log('AR session STARTED');
 		}
 
 		function onSessionEnded() {
 			currentSession.removeEventListener('end', onSessionEnded);
-
 			currentSession = null;
-
 			if (self.mymesh !== null) {
 				self.scene.remove(self.mymesh);
 				self.mymesh = null;
 			}
-
 			self.renderer.setAnimationLoop(null);
-
-			console.log('AR session ended');
+			self._log('AR session ENDED');
 		}
 
 		if (currentSession === null) {
@@ -215,12 +223,12 @@ class App {
 
 	requestHitTestSource() {
 		const self = this;
-
 		const session = this.renderer.xr.getSession();
 
 		session.requestReferenceSpace('viewer').then(function (referenceSpace) {
 			session.requestHitTestSource({ space: referenceSpace }).then(function (source) {
 				self.hitTestSource = source;
+				self._log('Hit-test source ready');
 			});
 		});
 
@@ -240,7 +248,6 @@ class App {
 			const referenceSpace = this.renderer.xr.getReferenceSpace();
 			const hit = hitTestResults[0];
 			const pose = hit.getPose(referenceSpace);
-
 			this.reticle.visible = true;
 			this.reticle.matrix.fromArray(pose.transform.matrix);
 		} else {
@@ -251,10 +258,8 @@ class App {
 	render(timestamp, frame) {
 		if (frame) {
 			if (this.hitTestSourceRequested === false) this.requestHitTestSource();
-
 			if (this.hitTestSource) this.getHitTestResults(frame);
 		}
-
 		this.renderer.render(this.scene, this.camera);
 	}
 }
