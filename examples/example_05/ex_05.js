@@ -78,18 +78,31 @@ class App {
 				self.mymesh.visible = true;
 				console.log('Model placed at:', self.mymesh.position);
 			} else {
-				// fallback: place in front of camera
-				self.mymesh.position.set(0, 0, -0.5);
+				// fallback: place 1m in front of camera
+				self.mymesh.position.set(0, 0, -1);
 				self.mymesh.visible = true;
-				console.log('Fallback: model placed 0.5m in front');
+				console.log('Fallback: model placed 1m in front');
 			}
 		}
 
+		// WebXR controller events (works on Android Chrome + real VR controllers)
 		this.controller = this.renderer.xr.getController(0);
 		this.controller.addEventListener('selectend', placeModel);
 		this.controller.addEventListener('select', placeModel);
-
 		this.scene.add(this.controller);
+
+		// DOM touch/click fallback (for iOS XRViewer and other viewers
+		// that don't forward screen taps to WebXR controller events)
+		this.renderer.domElement.addEventListener('touchend', function (e) {
+			console.log('DOM touchend fired');
+			e.preventDefault();
+			placeModel();
+		});
+		this.renderer.domElement.addEventListener('click', function (e) {
+			console.log('DOM click fired');
+			e.preventDefault();
+			placeModel();
+		});
 	}
 
 	resize() {
@@ -140,8 +153,8 @@ class App {
 				self.mymesh = gltf.scene;
 				self.mymesh.scale.set(0.7, 0.7, 0.7);
 
-				// show model immediately at origin to verify it loaded
-				self.mymesh.position.set(0, 0, -0.5);
+				// show at AR origin on load, tap to reposition
+				self.mymesh.position.set(0, 0, 0);
 				self.mymesh.visible = true;
 
 				self.loadingBar.visible = false;
